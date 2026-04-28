@@ -2,7 +2,6 @@ import csv
 import json
 import os
 import random
-import re
 from pathlib import Path
 
 
@@ -14,8 +13,7 @@ DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_MODEL = "mimo-v2.5-pro"
 DEFAULT_INPUT_CSV = "Articles.csv"
 DEFAULT_OUTPUT_TXT = "news.txt"
-DEFAULT_MAX_ITEMS = 5
-DEFAULT_ARTICLE_CHUNK_CHARS = 3500
+DEFAULT_MAX_ITEMS = 3
 DEFAULT_SUMMARY_LANGUAGE = "English"
 CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 
@@ -31,7 +29,6 @@ def load_config():
         "output_txt": os.getenv("OUTPUT_TXT", DEFAULT_OUTPUT_TXT),
         "max_items": int(os.getenv("MAX_ITEMS", str(DEFAULT_MAX_ITEMS))),
         "request_timeout": float(os.getenv("REQUEST_TIMEOUT", "120")),
-        "article_chunk_chars": int(os.getenv("ARTICLE_CHUNK_CHARS", str(DEFAULT_ARTICLE_CHUNK_CHARS))),
         "summary_language": os.getenv("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE),
         "article_column": os.getenv("ARTICLE_COLUMN", "Article"),
         "date_column": os.getenv("DATE_COLUMN", "Date"),
@@ -117,7 +114,7 @@ def build_summary_messages(text, summary_language, stage):
             "role": "system",
             "content": (
                 f"Write a concise news summary in {summary_language}. "
-                "Return only the summary text with no JSON, no bullets, and no explanation."
+                'Return ONLY valid JSON with this format: {"sum": "your summary text here"}'
             ),
         },
         {
@@ -135,7 +132,6 @@ def estimate_completion_tokens(text):
     estimated = len(text) // 4 + 180
     return max(250, min(1500, estimated))
 
-
 def summarize_text(client, config, text, stage):
     print(f"[DEBUG] Summarizing {stage}... (text length: {len(text)})")
     completion = client.chat.completions.create(
@@ -150,69 +146,25 @@ def summarize_text(client, config, text, stage):
         presence_penalty=0,
     )
 
-    summary = clean_text(completion.choices[0].message.content)
-    if not summary:
+    response_text = completion.choices[0].message.content.strip()
+    if not response_text:
         raise ValueError(f"MiMo returned an empty summary for {stage}.")
-    return summary
-
-
-def split_text_into_chunks(text, max_chars):
-    if len(text) <= max_chars:
-        return [text]
-
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    chunks = []
-    current = ""
-
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-
-        if len(sentence) > max_chars:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.extend(split_long_sentence(sentence, max_chars))
-            continue
-
-        candidate = sentence if not current else f"{current} {sentence}"
-        if len(candidate) <= max_chars:
-            current = candidate
+    
+    try:
+        parsed = json.loads(response_text)
+        if isinstance(parsed, dict) and "sum" in parsed:
+            summary = parsed["sum"].strip()
+            return summary
         else:
-            chunks.append(current)
-            current = sentence
-
-    if current:
-        chunks.append(current)
-
-    return chunks
-
-
-def split_long_sentence(text, max_chars):
-    parts = []
-    start = 0
-    while start < len(text):
-        parts.append(text[start : start + max_chars].strip())
-        start += max_chars
-    return [part for part in parts if part]
-
-
-def summarize_article(client, config, article):
-    chunks = split_text_into_chunks(article, config["article_chunk_chars"])
-    if len(chunks) == 1:
-        return summarize_text(client, config, chunks[0], "article")
-
-    chunk_summaries = [
-        summarize_text(client, config, chunk, f"article chunk {index}")
-        for index, chunk in enumerate(chunks, start=1)
-    ]
-    combined_summary_source = " ".join(chunk_summaries)
-    return summarize_text(client, config, combined_summary_source, "combined chunk summaries")
+            print(f"[DEBUG] JSON parsed but 'sum' key not found")
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] Failed to parse JSON: {e}")
+    
+    return response_text
 
 
 def summarize_news_item(client, config, item):
-    summary = summarize_article(client, config, item["article"] or "")
+    summary = summarize_text(client, config, item["article"] or "", "article")
     return {
         "title": item["title"],
         "published_at": item["published_at"],
