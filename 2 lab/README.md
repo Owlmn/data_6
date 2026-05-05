@@ -79,10 +79,8 @@ pip install -r requirements.txt
 | `MIMO_BASE_URL` | https://api.xiaomimimo.com/v1 | URL базы API |
 | `MIMO_MODEL` | mimo-v2.5-pro | Модель LLM |
 | `INPUT_CSV` | Articles.csv | Путь к входному CSV файлу |
-| `OUTPUT_TXT` | news.txt | Путь к выходному TXT файлу |
-| `MAX_ITEMS` | 5 | Максимальное количество статей для обработки |
-| `REQUEST_TIMEOUT` | 120 | Таймаут запроса к API в секундах |
-| `ARTICLE_CHUNK_CHARS` | 3500 | Максимальное количество символов в одной части статьи |
+| `OUTPUT_TXT` | output_example.txt | Путь к выходному TXT файлу |
+| `MAX_ITEMS` | 3 | Максимальное количество статей для обработки |
 | `SUMMARY_LANGUAGE` | English | Язык |
 
 ## Запуск
