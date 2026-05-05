@@ -114,7 +114,8 @@ def build_summary_messages(text, summary_language, stage):
             "role": "system",
             "content": (
                 f"Write a concise news summary in {summary_language}. "
-                'Return ONLY valid JSON with this format: {"sum": "your summary text here"}'
+                'Return ONLY valid JSON with this format: {"sum": "your summary text here"}.'
+                'Your response MUST be in this format and contain ONLY this JSON. Do NOT include any explanations, notes, or extra text.'
             ),
         },
         {
@@ -129,8 +130,11 @@ def build_summary_messages(text, summary_language, stage):
 
 
 def estimate_completion_tokens(text):
-    estimated = len(text) // 4 + 180
-    return max(250, min(1500, estimated))
+    base_tokens = 800
+    text_tokens = len(text) // 4
+    
+    total = base_tokens + text_tokens
+    return max(1000, min(4000, total))
 
 def summarize_text(client, config, text, stage):
     print(f"[DEBUG] Summarizing {stage}... (text length: {len(text)})")
@@ -146,7 +150,10 @@ def summarize_text(client, config, text, stage):
         presence_penalty=0,
     )
 
+    print(completion)
+
     response_text = completion.choices[0].message.content.strip()
+    print("LLM response: ", response_text)
     if not response_text:
         raise ValueError(f"MiMo returned an empty summary for {stage}.")
     
