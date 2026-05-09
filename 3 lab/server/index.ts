@@ -1,10 +1,23 @@
 import express from "express";
 import cors from "cors";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
+
+function findPython(): string {
+  for (const name of ["python", "python3", "python3.11", "python3.12", "python3.10"]) {
+    try {
+      execSync(`${name} --version`, { stdio: "ignore" });
+      return name;
+    } catch {}
+  }
+  return "python3";
+}
+
+const PYTHON_BIN = findPython();
+console.log(`Using Python: ${PYTHON_BIN}`);
 
 app.post("/execute", async (req, res) => {
   try {
@@ -35,7 +48,7 @@ sys.stdout = sys.__stdout__
 print(_stdout.getvalue())
 `;
 
-    const python = spawn("python3", ["-c", wrapped], {
+    const python = spawn(PYTHON_BIN, ["-c", wrapped], {
       timeout: 30000,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, PYTHONIOENCODING: "utf-8" },
