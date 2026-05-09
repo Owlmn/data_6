@@ -1,0 +1,4 @@
+fastapi>=0.115.0
+hypercorn>=0.17.0
+pandas>=2.2.0
+numpy>=2.0.0
