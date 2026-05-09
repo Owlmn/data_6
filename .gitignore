@@ -23,6 +23,7 @@
 
 # Production
 /dist
+/ai-sdk-preview-python-streaming-main
 
 # Logs
 npm-debug.log*
