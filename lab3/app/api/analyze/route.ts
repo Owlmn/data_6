@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sanitizeCellValue, sanitizeColumnName, validateDataset } from "@/lib/sanitize";
-import { inferColumnTypes } from "@/lib/columnTypes";
 
 export const runtime = "nodejs";
 
@@ -123,41 +121,17 @@ interface Message {
   name?: string;
 }
 
-function isRowArray(v: unknown): v is Record<string, unknown>[] {
-  return Array.isArray(v) && v.every(r => typeof r === "object" && r !== null);
-}
-
-function sanitizeRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.map(row => {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(row)) {
-      const key = sanitizeColumnName(k);
-      out[key] = typeof v === "string" ? sanitizeCellValue(v).sanitized : v;
-    }
-    return out;
-  });
-}
-
-function buildPayload(rows: Record<string, unknown>[], fileName: string): { json: string } {
-  return { json: JSON.stringify({ fileName, rows }) };
-}
-
 function safeJSONParse(text: string | undefined | null): Record<string, unknown> | null {
   if (!text) return null;
   let cleaned = text.trim();
-
   cleaned = cleaned.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
-
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start === -1 || end === -1 || start >= end) return null;
   cleaned = cleaned.slice(start, end + 1);
-
   try { return JSON.parse(cleaned) as Record<string, unknown>; } catch {}
-
   const fixed = cleaned.replace(/,(\s*[}\]])/g, "$1");
   try { return JSON.parse(fixed) as Record<string, unknown>; } catch {}
-
   let depth = 0, lastValid = 0, inString = false;
   for (let i = 0; i < cleaned.length; i++) {
     const ch = cleaned[i];
@@ -169,159 +143,103 @@ function safeJSONParse(text: string | undefined | null): Record<string, unknown>
   if (lastValid > 0) {
     try { return JSON.parse(cleaned.slice(0, lastValid)) as Record<string, unknown>; } catch {}
   }
-
   return null;
 }
 
-function buildColumnSummary(rows: Record<string, unknown>[]): string {
-  const { types } = inferColumnTypes(rows);
-  const cols = Object.keys(rows[0] || {});
-  return cols.map(c => `${c}: ${types[c] || "unknown"}`).join("\n");
-}
-
-async function executePython(code: string, datasetJson: string, signal?: AbortSignal): Promise<string> {
-  let baseUrl = process.env.PYTHON_EXECUTOR_URL;
-  if (!baseUrl) return "Error: PYTHON_EXECUTOR_URL is not set";
-  if (!/^https?:\/\//.test(baseUrl)) baseUrl = `https://${baseUrl}`;
-
-  try {
-    const resp = await fetch(`${baseUrl}/api/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, dataset: datasetJson }),
-      signal,
-    });
-    const data = await resp.json() as { result?: string; error?: string };
-    return data.result ?? data.error ?? "[No output]";
-  } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") return "Error: Python execution timed out";
-    return `Error: ${e instanceof Error ? e.message : "fetch failed"}`;
-  }
-}
-
-async function callDeepSeekWithTools(
-  datasetJson: string,
+async function generatePythonCode(
+  columnSummary: string,
   userMessage: string,
   apiKey: string,
   model: string,
-  columnSummary: string,
-): Promise<Record<string, unknown>> {
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 90_000);
+): Promise<string> {
+  const basePrompt = userMessage || "Проанализируй датасет и верни полный JSON с метриками, инсайтами и графиками";
+  const fullUserMessage = `${basePrompt}\n\n${columnSummary}`;
 
-  try {
-    const basePrompt = userMessage || "Проанализируй датасет и верни полный JSON с метриками, инсайтами и графиками";
-    const fullUserMessage = `${basePrompt}\n\n${columnSummary}`;
+  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: fullUserMessage },
+      ],
+      tools: [PYTHON_TOOL],
+      temperature: 0,
+      max_tokens: 8192,
+      stream: false,
+    }),
+  });
 
-    const messages: Message[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: fullUserMessage },
-    ];
-
-    const step1Resp = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools: [PYTHON_TOOL],
-        temperature: 0,
-        max_tokens: 8192,
-        stream: false,
-      }),
-      signal: ctrl.signal,
-    });
-
-    if (!step1Resp.ok) {
-      if (step1Resp.status === 400 || step1Resp.status === 413) {
-        const errBody = await step1Resp.text().catch(() => "");
-        if (errBody.includes("context") || errBody.includes("token") || errBody.includes("maximum")) {
-          throw new Error("Датасет слишком большой — превышен лимит токенов LLM. Уменьшите файл.");
-        }
+  if (!resp.ok) {
+    if (resp.status === 400 || resp.status === 413) {
+      const errBody = await resp.text().catch(() => "");
+      if (errBody.includes("context") || errBody.includes("token") || errBody.includes("maximum")) {
+        throw new Error("Датасет слишком большой — превышен лимит токенов LLM. Уменьшите файл.");
       }
-      throw new Error(`DeepSeek error ${step1Resp.status}`);
     }
-
-    const step1Json = await step1Resp.json() as any;
-    const msg = step1Json.choices?.[0]?.message;
-    console.log("[Step1] Tokens:", step1Json.usage?.total_tokens);
-
-    if (!msg?.tool_calls?.length) {
-      const direct = safeJSONParse(msg?.content);
-      if (direct) return direct;
-      throw new Error("No tool call and no JSON in response");
-    }
-
-    const toolCall = msg.tool_calls[0];
-    const args = JSON.parse(toolCall.function.arguments);
-    const code = args.code;
-
-    console.log(`[Python] Code: ${code.slice(0, 150)}...`);
-    const pythonOutput = await executePython(code, datasetJson, ctrl.signal);
-    console.log(`[Python] Output: ${pythonOutput.slice(0, 300)}`);
-
-    const fromPython = safeJSONParse(pythonOutput);
-    if (fromPython) {
-      console.log("[Result] Got valid JSON from Python");
-      return fromPython;
-    }
-
-    messages.push(
-      { role: "assistant", content: "", tool_calls: [toolCall] },
-      { role: "tool", tool_call_id: toolCall.id, name: "execute_python", content: pythonOutput },
-    );
-
-    let final: Record<string, unknown> | null = null;
-
-    for (let attempt = 0; attempt < 2 && !final; attempt++) {
-      const prompt = attempt === 0
-        ? "Из вывода Python выше извлеки итоговый JSON анализа. Верни ТОЛЬКО JSON объект. Не используй markdown."
-        : "Верни ТОЛЬКО один валидный JSON объект с ключами overview, keyMetrics, insights, charts. Без markdown, без пояснений.";
-
-      messages.push({ role: "user", content: prompt });
-
-      const step2Resp = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0,
-          max_tokens: 8192,
-          stream: false,
-        }),
-        signal: ctrl.signal,
-      });
-
-      if (!step2Resp.ok) throw new Error(`Step2 error ${step2Resp.status}`);
-
-      const step2Json = await step2Resp.json() as any;
-      const finalText = step2Json.choices?.[0]?.message?.content ?? "";
-      console.log(`[Step2] Attempt ${attempt + 1} (${finalText.length} chars):`, finalText.slice(0, 400));
-
-      final = safeJSONParse(finalText);
-      if (final) {
-        console.log(`[Step2] Parsed OK on attempt ${attempt + 1}`);
-        return final;
-      }
-
-      messages.push({ role: "assistant", content: finalText });
-    }
-
-    const retry = safeJSONParse(pythonOutput);
-    if (retry) return retry;
-
-    console.error("[Step2] All attempts failed. Python output:", pythonOutput.slice(0, 1000));
-    throw new Error("Cannot parse final JSON");
-  } finally {
-    clearTimeout(timeout);
+    throw new Error(`DeepSeek error ${resp.status}`);
   }
+
+  const json = await resp.json() as any;
+  const msg = json.choices?.[0]?.message;
+  console.log("[Generate] Tokens:", json.usage?.total_tokens);
+
+  if (!msg?.tool_calls?.length) {
+    const direct = safeJSONParse(msg?.content);
+    if (direct) return JSON.stringify(direct);
+    throw new Error("No tool call and no JSON in response");
+  }
+
+  return JSON.parse(msg.tool_calls[0].function.arguments).code;
+}
+
+async function extractJSON(
+  pythonOutput: string,
+  apiKey: string,
+  model: string,
+): Promise<Record<string, unknown>> {
+  const fromPython = safeJSONParse(pythonOutput);
+  if (fromPython) return fromPython;
+
+  const messages: Message[] = [
+    { role: "user", content: `Извлеки итоговый JSON анализа из вывода Python ниже. Верни ТОЛЬКО JSON объект с ключами overview, keyMetrics, insights, charts. Без markdown.\n\n${pythonOutput}` },
+  ];
+
+  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0,
+      max_tokens: 4096,
+      stream: false,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Extract error ${resp.status}`);
+
+  const json = await resp.json() as any;
+  const text = json.choices?.[0]?.message?.content ?? "";
+  const result = safeJSONParse(text);
+  if (result) return result;
+
+  const retry = safeJSONParse(pythonOutput);
+  if (retry) return retry;
+
+  return {
+    overview: pythonOutput.slice(0, 500) || "Не удалось структурировать результат.",
+    keyMetrics: [],
+    insights: [],
+    charts: [],
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -330,23 +248,20 @@ export async function POST(req: NextRequest) {
     if (!apiKey?.trim()) return NextResponse.json({ error: "DEEPSEEK_API_KEY not configured" }, { status: 500 });
 
     const body = await req.json() as Record<string, unknown>;
-    const fileName = typeof body.fileName === "string" ? body.fileName : "";
-    const data = body.data;
+    const model = process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL;
+
+    if (body.pythonOutput) {
+      const analysis = await extractJSON(body.pythonOutput as string, apiKey, model);
+      return NextResponse.json({ analysis });
+    }
+
+    const columnSummary = typeof body.columnSummary === "string" ? body.columnSummary : "";
     const message = typeof body.message === "string" ? body.message.trim() : "";
 
-    if (!isRowArray(data) || !fileName.trim()) return NextResponse.json({ error: "data and fileName required" }, { status: 400 });
-    if (data.length === 0) return NextResponse.json({ error: "Dataset is empty" }, { status: 400 });
+    if (!columnSummary) return NextResponse.json({ error: "columnSummary required" }, { status: 400 });
 
-    const validation = validateDataset(data);
-    if (!validation.valid) return NextResponse.json({ error: validation.error }, { status: 400 });
-
-    const sanitized = sanitizeRows(data);
-    const { json: datasetJson } = buildPayload(sanitized, fileName);
-    const model = process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL;
-    const columnSummary = buildColumnSummary(sanitized);
-
-    const analysis = await callDeepSeekWithTools(datasetJson, message, apiKey, model, columnSummary);
-    return NextResponse.json({ analysis, warnings: [] });
+    const pythonCode = await generatePythonCode(columnSummary, message, apiKey, model);
+    return NextResponse.json({ pythonCode });
   } catch (e) {
     console.error("Analysis error:", e);
     return NextResponse.json({ error: e instanceof Error ? e.message : "Internal server error" }, { status: 500 });

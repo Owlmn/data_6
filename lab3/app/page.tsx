@@ -82,35 +82,58 @@ export default function Home() {
       }
 
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "/api/analyze";
-        const res = await fetch(apiUrl, {
+        const summary = history[idx];
+        const columnSummary = summary.columns.map(c => `${c.name}: ${c.type === "numeric" ? "number" : "string"}`).join("\n");
+
+        const res1 = await fetch("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data, fileName, message }),
+          body: JSON.stringify({ columnSummary, message, fileName }),
         });
 
-        const raw = await res.text();
-        let result: Record<string, unknown> = {};
-        try { result = raw ? JSON.parse(raw) : {}; } catch { result = {}; }
+        if (!res1.ok) {
+          const err = await res1.json().catch(() => ({}));
+          throw new Error((err as Record<string, unknown>).error as string || "Failed to generate code");
+        }
+
+        const { pythonCode } = await res1.json() as { pythonCode: string };
+
+        const pythonUrl = process.env.NEXT_PUBLIC_PYTHON_URL || "http://localhost:8000";
+        const res2 = await fetch(`${pythonUrl}/api/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: pythonCode, dataset: JSON.stringify({ fileName, rows: data }) }),
+        });
+
+        const pythonData = await res2.json() as { result?: string; error?: string };
+        const pythonOutput = pythonData.result ?? pythonData.error ?? "";
+
+        let analysisResult: Analysis | null = null;
+        try { analysisResult = JSON.parse(pythonOutput) as Analysis; } catch {}
+
+        if (analysisResult) {
+          setAnalysis(analysisResult);
+        } else {
+          const res3 = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pythonOutput }),
+          });
+          const { analysis } = await res3.json() as { analysis: Analysis };
+          setAnalysis(analysis);
+        }
 
         if (currentId !== requestIdRef.current) return;
 
-        if (!res.ok) throw new Error(
-          typeof result.error === "string" && result.error.trim() ? result.error : "Analysis failed"
-        );
-
-        const a = (result.analysis as Analysis) ?? null;
-        setAnalysis(a);
-
         setHistory((prev) => {
           const u = [...prev];
-          if (u[idx]) u[idx] = { ...u[idx], analysis: a, analysisMessage: message };
+          if (u[idx]) u[idx] = { ...u[idx], analysis: analysisResult || ({} as Analysis), analysisMessage: message };
           saveHistory(u);
           return u;
         });
 
-        if (a) {
-          const entry: CacheEntry = { fileHash, message, analysis: a, timestamp: Date.now() };
+        if (analysisResult) {
+          const entry: CacheEntry = { fileHash, message, analysis: analysisResult, timestamp: Date.now() };
           cacheRef.current.set(cacheKey, entry);
           try {
             const entries = Array.from(cacheRef.current.values())
@@ -125,7 +148,7 @@ export default function Home() {
         if (currentId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [saveHistory]
+    [saveHistory, history]
   );
 
   const handleFileLoaded = useCallback(
