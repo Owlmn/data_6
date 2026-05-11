@@ -19,8 +19,6 @@ const INJECTION_PATTERNS = [
 ];
 
 const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
-const MAX_CELL_LEN = Infinity;
-const MAX_COL_NAME = Infinity;
 
 export function sanitizeCellValue(value: string): { sanitized: string; flagged: boolean } {
   let s = value.replace(CONTROL_CHARS, "");
@@ -28,12 +26,11 @@ export function sanitizeCellValue(value: string): { sanitized: string; flagged: 
   for (const p of INJECTION_PATTERNS) {
     if (s.search(p) !== -1) { s = s.replace(p, "[FILTERED]"); flagged = true; }
   }
-  if (s.length > MAX_CELL_LEN) { s = s.slice(0, MAX_CELL_LEN) + "...[TRUNCATED]"; flagged = true; }
   return { sanitized: s, flagged };
 }
 
 export function sanitizeColumnName(name: string): string {
-  return name.replace(CONTROL_CHARS, "").slice(0, MAX_COL_NAME);
+  return name.replace(CONTROL_CHARS, "");
 }
 
 export function validateDataset(data: unknown): { valid: boolean; error?: string } {

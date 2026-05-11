@@ -194,7 +194,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col">
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3 sm:px-6">
+      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3 sm:px-6 md:pl-64">
         <div className="flex items-center justify-between max-w-5xl mx-auto w-full gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button

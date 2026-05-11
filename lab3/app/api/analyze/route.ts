@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sanitizeCellValue, sanitizeColumnName, validateDataset } from "@/lib/sanitize";
+import { inferColumnTypes } from "@/lib/columnTypes";
 
 export const runtime = "nodejs";
 
 const DEFAULT_MODEL = "deepseek-v4-flash";
-const MAX_PAYLOAD = 1_500_000;
 
 const PYTHON_TOOL = {
   type: "function" as const,
@@ -21,7 +21,8 @@ const PYTHON_TOOL = {
   },
 };
 
-const SYSTEM_PROMPT = `Ты data-аналитик. Датасет загружен как pandas DataFrame 'df'. 
+const SYSTEM_PROMPT = `Ты data-аналитик. Датасет загружен как pandas DataFrame 'df'.
+Типы колонок уже определены и переданы в сообщении пользователя — НЕ трать токены на их определение.
 Вызови execute_python ОДИН раз. В коде:
 
 1. НИКАКИХ print() кроме финального print(json.dumps(result, ensure_ascii=False))
@@ -51,6 +52,8 @@ const SYSTEM_PROMPT = `Ты data-аналитик. Датасет загруже
 - ВСЕ цифры должны быть ВЫЧИСЛЕНЫ в коде, не выдумывай
 - Все тексты на русском, КОРОТКИЕ (1 предложение на описание)
 - Если колонок <3 числовых — не включай correlations
+- Оборачивай опасные операции (pd.cut, pd.qcut, биннинг) в try/except и при ошибке пропускай их
+- Если метрика или график не могут быть вычислены — пропусти, не ломай весь анализ
 
 ПРИМЕР КОДА:
 \`\`\`python
@@ -67,16 +70,13 @@ insights = []
 correlations = []
 charts = []
 
-# Пример метрики
 survived = int(df['Survived'].sum()) if 'Survived' in df.columns else 0
 survived_pct = round(survived / total * 100, 1)
 metrics.append({"label": "Выжило пассажиров", "value": f"{survived} ({survived_pct}%)", "description": "Доля выживших от общего числа"})
 
-# Пример инсайта
 if survived_pct < 50:
     insights.append({"title": "Низкая выживаемость", "description": f"Выжило только {survived_pct}% пассажиров ({survived} из {total})", "importance": "high"})
 
-# Пример корреляции
 if len(num_cols) >= 2:
     corr_matrix = df[num_cols].corr()
     for i in range(len(num_cols)):
@@ -91,7 +91,6 @@ if len(num_cols) >= 2:
                     "description": f"Коэффициент {coeff:.2f}"
                 })
 
-# Пример графика
 if cat_cols:
     top_cat = df[cat_cols[0]].value_counts().head(10)
     charts.append({
@@ -139,14 +138,8 @@ function sanitizeRows(rows: Record<string, unknown>[]): Record<string, unknown>[
   });
 }
 
-function buildPayload(rows: Record<string, unknown>[], fileName: string): { json: string; count: number } {
-  const w = [...rows];
-  let json = JSON.stringify({ fileName, rows: w });
-  while (json.length > MAX_PAYLOAD && w.length > 50) {
-    w.length = Math.floor(w.length * 0.85);
-    json = JSON.stringify({ fileName, rows: w });
-  }
-  return { json, count: w.length };
+function buildPayload(rows: Record<string, unknown>[], fileName: string): { json: string } {
+  return { json: JSON.stringify({ fileName, rows }) };
 }
 
 function safeJSONParse(text: string | undefined | null): Record<string, unknown> | null {
@@ -180,10 +173,16 @@ function safeJSONParse(text: string | undefined | null): Record<string, unknown>
   return null;
 }
 
+function buildColumnSummary(rows: Record<string, unknown>[]): string {
+  const { types } = inferColumnTypes(rows);
+  const cols = Object.keys(rows[0] || {});
+  return cols.map(c => `${c}: ${types[c] || "unknown"}`).join("\n");
+}
+
 async function executePython(code: string, datasetJson: string, signal?: AbortSignal): Promise<string> {
-  // Local dev: PYTHON_EXECUTOR_URL=http://localhost:8000
-  // Vercel prod: PYTHON_EXECUTOR_URL not set → use VERCEL_URL (auto-provided by Vercel)
-  const baseUrl = process.env.PYTHON_EXECUTOR_URL || `https://${process.env.VERCEL_URL}`;
+  let baseUrl = process.env.PYTHON_EXECUTOR_URL;
+  if (!baseUrl) return "Error: PYTHON_EXECUTOR_URL is not set";
+  if (!/^https?:\/\//.test(baseUrl)) baseUrl = `https://${baseUrl}`;
 
   try {
     const resp = await fetch(`${baseUrl}/api/execute`, {
@@ -205,14 +204,18 @@ async function callDeepSeekWithTools(
   userMessage: string,
   apiKey: string,
   model: string,
+  columnSummary: string,
 ): Promise<Record<string, unknown>> {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 90_000);
 
   try {
+    const basePrompt = userMessage || "Проанализируй датасет и верни полный JSON с метриками, инсайтами и графиками";
+    const fullUserMessage = `${basePrompt}\n\n${columnSummary}`;
+
     const messages: Message[] = [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userMessage || "Проанализируй датасет и верни полный JSON с метриками, инсайтами и графиками" },
+      { role: "user", content: fullUserMessage },
     ];
 
     const step1Resp = await fetch("https://api.deepseek.com/chat/completions", {
@@ -232,7 +235,15 @@ async function callDeepSeekWithTools(
       signal: ctrl.signal,
     });
 
-    if (!step1Resp.ok) throw new Error(`DeepSeek error ${step1Resp.status}`);
+    if (!step1Resp.ok) {
+      if (step1Resp.status === 400 || step1Resp.status === 413) {
+        const errBody = await step1Resp.text().catch(() => "");
+        if (errBody.includes("context") || errBody.includes("token") || errBody.includes("maximum")) {
+          throw new Error("Датасет слишком большой — превышен лимит токенов LLM. Уменьшите файл.");
+        }
+      }
+      throw new Error(`DeepSeek error ${step1Resp.status}`);
+    }
 
     const step1Json = await step1Resp.json() as any;
     const msg = step1Json.choices?.[0]?.message;
@@ -263,7 +274,6 @@ async function callDeepSeekWithTools(
       { role: "tool", tool_call_id: toolCall.id, name: "execute_python", content: pythonOutput },
     );
 
-    // ── Step 2: extract JSON from Python output (with retry) ──
     let final: Record<string, unknown> | null = null;
 
     for (let attempt = 0; attempt < 2 && !final; attempt++) {
@@ -301,11 +311,9 @@ async function callDeepSeekWithTools(
         return final;
       }
 
-      // Push assistant's failed response so the retry prompt makes sense in context
       messages.push({ role: "assistant", content: finalText });
     }
 
-    // Last resort: scan Python output one more time
     const retry = safeJSONParse(pythonOutput);
     if (retry) return retry;
 
@@ -335,8 +343,9 @@ export async function POST(req: NextRequest) {
     const sanitized = sanitizeRows(data);
     const { json: datasetJson } = buildPayload(sanitized, fileName);
     const model = process.env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL;
+    const columnSummary = buildColumnSummary(sanitized);
 
-    const analysis = await callDeepSeekWithTools(datasetJson, message, apiKey, model);
+    const analysis = await callDeepSeekWithTools(datasetJson, message, apiKey, model, columnSummary);
     return NextResponse.json({ analysis, warnings: [] });
   } catch (e) {
     console.error("Analysis error:", e);

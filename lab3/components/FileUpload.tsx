@@ -15,6 +15,11 @@ export default function FileUpload({ onFileLoaded, isLoading }: FileUploadProps)
 
   const handleFile = useCallback(
     async (file: File) => {
+      if (file.size > 35 * 1024 * 1024) {
+        alert("Файл слишком большой. Максимальный размер: 35 МБ.");
+        return;
+      }
+
       const ext = file.name.split(".").pop()?.toLowerCase();
 
       if (ext === "csv") {

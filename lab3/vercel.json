@@ -2,10 +2,5 @@
   "framework": "nextjs",
   "buildCommand": "next build",
   "installCommand": "npm install",
-  "outputDirectory": ".next",
-  "functions": {
-    "api/**": {
-      "excludeFiles": "{.next,.git,node_modules}/**"
-    }
-  }
+  "outputDirectory": ".next"
 }
