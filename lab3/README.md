@@ -1,185 +1,161 @@
 # Data Analyst AI
 
-Веб-приложение для анализа данных с помощью ИИ. Загрузите CSV или Excel файл — DeepSeek выполнит Python-код, вычислит метрики, найдёт инсайты и построит графики.
+Веб-приложение для анализа данных через LLM. Пользователь загружает CSV или Excel — DeepSeek генерирует Python-код, Railway выполняет его на полных данных, фронтенд показывает метрики, инсайты, корреляции и графики.
 
-## Как это работает
+### https://llm-api-analyst.vercel.app/
+
+P.S: ввиду ограничений ограничений хостиногов Vercel и Railway, а также лимитов токенов deepseek, поддерживаются файлы 
+
+## Архитектура
 
 ```
-   Загрузка файла  →   Анализ через DeepSeek API    →    Результат
-
-   CSV / Excel         Python-код                        Метрики, графики,
-   Парсинг на          (pandas, numpy,                   инсайты,
-   клиенте             matplotlib)                       корреляции
+Пользователь → загрузка CSV/Excel → парсинг на клиенте
+            |
+  Vercel /api/analyze → DeepSeek API (генерация Python-кода)
+            │
+  Railway /api/execute → pandas/numpy (исполнение на полных данных)
+            │
+  Результат -> обзор, метрики, инсайты, корреляции, графики (Recharts)
 ```
 
-1. Пользователь загружает CSV или Excel (.xlsx/.xls) через веб-интерфейс
-2. Данные парсятся на клиенте (Papa Parse для CSV, SheetJS для Excel) и отправляются на сервер
-3. Сервер автоматически определяет типы колонок (number/string), формирует промпт и отправляет данные в DeepSeek API
-4. DeepSeek самостоятельно пишет и выполняет Python-код для анализа
-5. Результат возвращается в структурированном JSON: overview, keyMetrics, insights, correlations, charts
-6. Фронтенд визуализирует результат: карточки метрик, таблица корреляций, графики (Recharts), блоки инсайтов
-7. Можно задавать уточняющие вопросы к уже загруженному датасету — как в чате
+Данные не проходят через Vercel — клиент отправляет их напрямую в Railway. Railway обрабатывает файлы до 35 МБ.
+
+## Структура проекта
+
+```
+├── app/
+│   ├── globals.css              # Tailwind
+│   ├── layout.tsx               # Root layout
+│   ├── page.tsx                 # Главная страница: чаты, превью, пайплайн анализа
+│   └── api/analyze/
+│       └── route.ts             # Генерация Python-кода через DeepSeek, извлечение JSON
+├── components/
+│   ├── FileUpload.tsx           # Загрузка CSV/Excel, авто-разделитель, Text-to-Columns
+│   └── AnalysisResults.tsx      # Отображение: обзор, метрики, инсайты, корреляции, графики
+├── lib/
+│   ├── dataParser.ts            # Типы (Analysis, DataSummary, ColumnInfo), summarizeData
+│   └── sanitize.ts              # Защита от prompt-injection (35 паттернов EN/RU)
+├── server/
+│   ├── main.py                  # FastAPI: /api/execute, /api/health
+│   └── railway.toml             # Деплой-конфиг Railway
+├── .env.example                 # Шаблон переменных окружения
+├── vercel.json                  # Деплой-конфиг Vercel
+├── requirements.txt             # Python-зависимости
+└── package.json                 # Node-зависимости
+```
 
 ## Технологии
 
-| Компонент | Технология |
+| Компонент | Стек |
 |---|---|
-| Frontend | Next.js 16, React 18, Tailwind CSS |
-| Backend (API) | Next.js API Routes (TypeScript) |
-| Python Runtime | FastAPI (серверлес-функция на Vercel) |
+| Фронтенд | Next.js 16, React 18, Tailwind CSS |
+| Оркестрация LLM | Next.js API Routes (Vercel) |
+| Исполнение Python | FastAPI + pandas + numpy (Railway) |
+| LLM | DeepSeek |
 | Графики | Recharts |
-| Парсинг CSV | Papa Parse |
-| Парсинг Excel | SheetJS (xlsx) |
-| LLM | DeepSeek (через OpenAI-совместимый API) |
-| Деплой | Vercel |
+| CSV | Papa Parse |
+| Excel | SheetJS (xlsx) |
 
 ## Быстрый старт
 
-### 1. Получите API ключ
+### 1. API ключ
 
-Зарегистрируйтесь на [platform.deepseek.com](https://platform.deepseek.com) и создайте API ключ.
+Зарегистрироваться на [platform.deepseek.com](https://platform.deepseek.com), создать API ключ.
 
-### 2. Настройте окружение
+### 2. Переменные окружения
 
-Создайте файл `.env` в корне проекта:
+Создать `.env` в корне:
 
 ```bash
-DEEPSEEK_API_KEY=ваш_ключ_здесь
-DEEPSEEK_MODEL=deepseek-chat
-PYTHON_EXECUTOR_URL=http://localhost:8000
+DEEPSEEK_API_KEY=ваш_ключ
+DEEPSEEK_MODEL=deepseek-v4-flash
+NEXT_PUBLIC_PYTHON_URL=http://localhost:8000
 ```
 
-### 3. Установите зависимости и запустите
+### 3. Запуск
 
 ```bash
 npm install
 pip install -r requirements.txt
 
-# Терминал 1: Python-сервер для исполнения кода
-python -m uvicorn api.index:app --reload --port 8000
+# Терминал 1 — Python-сервер
+python -m uvicorn server.main:app --reload --port 8000
 
-# Терминал 2: Next.js dev-сервер
+# Терминал 2 — Next.js
 npm run dev
 ```
 
-Откройте [http://localhost:3000](http://localhost:3000) в браузере.
-
-## Структура проекта
-
-```
-├── .env                        # API ключи (не коммитить!)
-├── .env.example                # Шаблон переменных окружения
-├── .gitignore
-├── package.json
-├── next.config.js              # Rewrites: /api/* → Python-функция (Vercel) или localhost:8000 (dev)
-├── tailwind.config.js
-├── tsconfig.json
-├── vercel.json                 # Конфигурация серверлес-функций Vercel
-├── requirements.txt            # Python-зависимости (FastAPI, pandas, numpy, vercel)
-├── app/
-│   ├── globals.css             # Глобальные стили + Tailwind
-│   ├── layout.tsx              # Root layout
-│   ├── page.tsx                # Главная страница (вся логика UI)
-│   └── api/analyze/
-│       └── route.ts            # Next.js API: вызов DeepSeek + оркестрация Python
-├── api/
-│   └── index.py                # FastAPI: исполнение Python-кода (серверлес-функция Vercel)
-├── components/
-│   ├── FileUpload.tsx          # Drag-and-drop загрузка CSV/Excel
-│   └── AnalysisResults.tsx     # Визуализация результатов анализа
-└── lib/
-    ├── dataParser.ts           # Клиентский парсинг и типизация данных
-    ├── sanitize.ts             # Защита от prompt injection
-    └── columnTypes.ts          # Автоопределение типов колонок
-```
-
-## API
-
-### `POST /api/analyze`
-
-Отправляет данные в DeepSeek и возвращает результат анализа.
-
-**Запрос:**
-```json
-{
-  "fileName": "sales.csv",
-  "message": "Покажи топ-5 по выручке",
-  "data": [
-    {"date": "2024-01", "revenue": 15000, "orders": 120},
-    {"date": "2024-02", "revenue": 18000, "orders": 145}
-  ]
-}
-```
-
-**Ответ:**
-```json
-{
-  "analysis": {
-    "overview": "Датасет содержит данные о продажах за 2 месяца...",
-    "keyMetrics": [
-      {"label": "Общая выручка", "value": "33 000", "description": "Сумма выручки за все периоды"}
-    ],
-    "insights": [
-      {"title": "Рост выручки", "description": "Выручка выросла на 20%...", "importance": "high"}
-    ],
-    "correlations": [
-      {"col1": "revenue", "col2": "orders", "strength": "strong", "direction": "positive", "description": "..."}
-    ],
-    "charts": [
-      {"type": "bar", "title": "Выручка по месяцам", "data": [...], "xKey": "date", "yKey": "revenue", "description": "..."}
-    ]
-  },
-  "warnings": []
-}
-```
-
-### `POST /api/execute` (Python-функция)
-
-Исполняет Python-код, сгенерированный DeepSeek. Вызывается серверным роутом `/api/analyze`.
-
-### `GET /api/health`
-
-Проверка работоспособности Python-сервера.
-
-**Ошибки:**
-| Код | Причина |
-|---|---|
-| 400 | Пустой датасет, невалидная структура |
-| 500 | Не настроен `DEEPSEEK_API_KEY` |
-| 502 | Ошибка DeepSeek API |
-
-## Особенности
-
-### Адаптивный интерфейс
-
-Приложение адаптировано для мобильных устройств: сворачиваемый сайдбар с историей чатов, адаптивные отступы и размеры графиков.
-
-### Защита от Prompt Injection
-
-Многоуровневая защита от инъекций в данных:
-- Фильтрация паттернов вида «ignore previous instructions», «system:» и подобных
-- Санитизация управляющих символов
-- Валидация структуры датасета
-- Ролевое разграничение в промпте
-
-### Оптимизации скорости
-
-- Отключён thinking mode — модель отвечает быстрее
-- Автоопределение типов колонок на сервере — модель не тратит токены на угадывание
-- Корреляции вычисляются только при ≥3 числовых колонках
-- Автоматическая обрезка данных при превышении лимита токенов (1 048 576)
-
-### Деплой на Vercel
-
-Проект полностью готов к деплою на Vercel:
-- Next.js обрабатывает фронтенд и API-роут `/api/analyze`
-- Python FastAPI (`api/index.py`) деплоится как серверлес-функция для исполнения кода
-- `vercel.json` настраивает Python-функции, `next.config.js` — rewrites для API
+Открыть http://localhost:3000.
 
 ## Переменные окружения
 
 | Переменная | Обязательна | По умолчанию | Описание |
 |---|---|---|---|
-| `DEEPSEEK_API_KEY` | ✅ | — | API ключ из DeepSeek Platform |
-| `DEEPSEEK_MODEL` | ❌ | `deepseek-v4-flash` | Модель DeepSeek |
-| `PYTHON_EXECUTOR_URL` | ❌ | `http://localhost:8000` | URL Python-сервера (только для локальной разработки) |
+| `DEEPSEEK_API_KEY` | Да | — | API ключ DeepSeek |
+| `DEEPSEEK_MODEL` | Нет | `deepseek-v4-flash` | Модель DeepSeek |
+| `NEXT_PUBLIC_PYTHON_URL` | Да | `http://localhost:8000` | URL Railway-сервера |
+
+## API
+
+### `POST /api/analyze` (Vercel)
+
+Генерация кода:
+
+```json
+{
+  "columnSummary": "date: string\nrevenue: number\norders: number",
+  "message": "Покажи топ-5 по выручке",
+  "fileName": "sales.csv"
+}
+```
+
+Ответ: `{ "pythonCode": "import json\nimport pandas as pd\n..." }`
+
+Извлечение JSON (если вывод Python не распарсился):
+
+```json
+{ "pythonOutput": "сырой вывод от Railway..." }
+```
+
+Ответ: `{ "analysis": { "overview": "...", "keyMetrics": [...], "insights": [...], "charts": [...] } }`
+
+### `POST /api/execute` (Railway)
+
+```json
+{
+  "code": "import json\nimport pandas as pd\n...",
+  "dataset": "{\"fileName\":\"sales.csv\",\"rows\":[...]}"
+}
+```
+
+Ответ: `{ "result": "{\"overview\":\"...\",\"keyMetrics\":[...]}" }`
+
+### `GET /api/health` (Railway)
+
+Ответ: `{ "status": "ok" }`
+
+## Деплой
+
+### Vercel (фронтенд + оркестрация)
+
+1. Подключить репозиторий к Vercel
+2. Framework: Next.js (автоопределение)
+3. Переменные окружения: `DEEPSEEK_API_KEY`, `NEXT_PUBLIC_PYTHON_URL`
+
+### Railway (исполнение Python)
+
+1. Подключить репозиторий к Railway
+2. Railway использует `server/railway.toml` для сборки и запуска
+3. Переменные окружения не требуются
+
+## Защита от prompt-injection
+
+Реализована в `lib/sanitize.ts`, вызывается серверно в `/api/analyze`. Фильтрует 35 паттернов (EN + RU): подмена системных инструкций, jailbreak, переопределение роли модели. Пользовательский ввод с детектированной атакой заменяется на `[FILTERED]`, факт атаки логируется в консоль.
+
+CORS бэкенда ограничен доменом фронтенда и `localhost:3000`.
+
+## Ограничения
+
+- Файлы до 35 МБ (проверка на клиенте)
+- При превышении лимита токенов DeepSeek — сообщение об ошибке
+- История чатов и кэш анализа сохраняются в localStorage (до 10 записей)

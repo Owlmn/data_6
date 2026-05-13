@@ -18,7 +18,7 @@ export interface Analysis {
     description: string;
   }[];
   charts?: Record<string, unknown>[];
-  recommendations?: string[];
+  isError?: boolean;
 }
 
 export interface DataSummary {
@@ -79,13 +79,11 @@ export function summarizeData(
     };
   });
 
-  const previewRows = data.slice(0, 5);
-
   return {
     fileName,
     rows: data.length,
     columns: columnInfos,
-    previewRows,
+    previewRows: data.slice(0, 5),
     fullData: data,
     analysis: null,
     analysisMessage: "",

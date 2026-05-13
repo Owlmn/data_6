@@ -67,14 +67,7 @@ function ChartRenderer({ chart }: { chart: Record<string, unknown> }) {
         return (
           <ResponsiveContainer width="100%" height={220}>
             <PieChart>
-              <Pie
-                data={data}
-                dataKey={yKey || "value"}
-                nameKey={xKey}
-                cx="50%"
-                cy="50%"
-                outerRadius={70}
-              >
+              <Pie data={data} dataKey={yKey || "value"} nameKey={xKey} cx="50%" cy="50%" outerRadius={70}>
                 {data.map((_, i) => (
                   <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                 ))}
@@ -108,24 +101,30 @@ function ChartRenderer({ chart }: { chart: Record<string, unknown> }) {
   );
 }
 
-const importanceColors = {
+const importanceColors: Record<string, string> = {
   high: "border-rose-200 bg-rose-50",
   medium: "border-amber-200 bg-amber-50",
   low: "border-slate-200 bg-slate-50",
 };
 
-const importanceBadge = {
+const importanceBadge: Record<string, string> = {
   high: "bg-rose-100 text-rose-700",
   medium: "bg-amber-100 text-amber-700",
   low: "bg-slate-100 text-slate-600",
 };
 
 export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
+  const isError = analysis.isError;
+
   return (
     <div className="space-y-6">
-      <section className="rounded-lg border border-slate-200 bg-white p-3 sm:p-5">
-        <h2 className="mb-2 text-lg font-semibold text-slate-900">📋 Обзор</h2>
-        <p className="text-sm leading-relaxed text-slate-700">{analysis.overview}</p>
+      <section className={`rounded-lg border p-3 sm:p-5 ${isError ? "border-red-300 bg-red-50" : "border-slate-200 bg-white"}`}>
+        <h2 className={`mb-2 text-lg font-semibold ${isError ? "text-red-800" : "text-slate-900"}`}>
+          {isError ? "❌ Ошибка выполнения" : "📋 Обзор"}
+        </h2>
+        <pre className={`text-sm leading-relaxed whitespace-pre-wrap ${isError ? "text-red-700" : "text-slate-700"}`}>
+          {analysis.overview}
+        </pre>
       </section>
 
       {analysis.keyMetrics && analysis.keyMetrics.length > 0 && (
@@ -134,9 +133,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {analysis.keyMetrics.map((m, i) => (
               <div key={i} className="rounded-lg border border-slate-200 bg-white p-3 sm:p-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  {m.label}
-                </p>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{m.label}</p>
                 <p className="mt-1 text-xl sm:text-2xl font-bold text-slate-900">{m.value}</p>
                 <p className="mt-1 text-xs text-slate-500">{m.description}</p>
               </div>
@@ -150,10 +147,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
           <h2 className="mb-3 text-lg font-semibold text-slate-900">💡 Инсайты</h2>
           <div className="space-y-3">
             {analysis.insights.map((ins, i) => (
-              <div
-                key={i}
-                className={`rounded-lg border p-4 ${importanceColors[ins.importance]}`}
-              >
+              <div key={i} className={`rounded-lg border p-4 ${importanceColors[ins.importance]}`}>
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-sm font-semibold text-slate-800">{ins.title}</h3>
                   <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${importanceBadge[ins.importance]}`}>

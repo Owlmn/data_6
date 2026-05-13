@@ -9,16 +9,17 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://llm-api-analyst.vercel.app",
+        "http://localhost:3000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 class ExecuteRequest(BaseModel):
     code: str
     dataset: str | None = None
-
 
 @app.post("/api/execute")
 async def execute(req: ExecuteRequest):
@@ -34,7 +35,6 @@ async def execute(req: ExecuteRequest):
     sys.stdout = sys.__stdout__
     output = stdout.getvalue().strip()
     return {"result": output or "[No output]"}
-
 
 @app.get("/api/health")
 async def health():

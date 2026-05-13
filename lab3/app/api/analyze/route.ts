@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sanitizeUserInput } from "@/lib/sanitize";
 
 export const runtime = "nodejs";
 
@@ -52,6 +53,8 @@ const SYSTEM_PROMPT = `Ты data-аналитик. Датасет загруже
 - Если колонок <3 числовых — не включай correlations
 - Оборачивай опасные операции (pd.cut, pd.qcut, биннинг) в try/except и при ошибке пропускай их
 - Если метрика или график не могут быть вычислены — пропусти, не ломай весь анализ
+- Перед арифметикой приводи числовые колонки: df[col] = pd.to_numeric(df[col], errors='coerce')
+- Весь код после импортов оберни в try/except и в except сделай print(json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False))
 
 ПРИМЕР КОДА:
 \`\`\`python
@@ -256,9 +259,15 @@ export async function POST(req: NextRequest) {
     }
 
     const columnSummary = typeof body.columnSummary === "string" ? body.columnSummary : "";
-    const message = typeof body.message === "string" ? body.message.trim() : "";
+    let message = typeof body.message === "string" ? body.message.trim() : "";
 
     if (!columnSummary) return NextResponse.json({ error: "columnSummary required" }, { status: 400 });
+
+    const sanitized = sanitizeUserInput(message);
+    if (sanitized.flagged) {
+      console.warn("[Sanitize] Prompt injection detected in user message");
+      message = sanitized.sanitized;
+    }
 
     const pythonCode = await generatePythonCode(columnSummary, message, apiKey, model);
     return NextResponse.json({ pythonCode });

@@ -22,6 +22,24 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
+function normalizeRowTypes(rows: Record<string, unknown>[], columns: { name: string; type: string }[]): Record<string, unknown>[] {
+  const numericCols = new Set(columns.filter((c) => c.type === "numeric").map((c) => c.name));
+  return rows.map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(row)) {
+      if (numericCols.has(key)) {
+        const num = Number(val);
+        out[key] = isNaN(num) ? null : num;
+      } else if (typeof val === "string" && val.trim() !== "" && !isNaN(Number(val.trim()))) {
+        out[key] = Number(val.trim());
+      } else {
+        out[key] = val;
+      }
+    }
+    return out;
+  });
+}
+
 export default function Home() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -32,7 +50,6 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const requestIdRef = useRef(0);
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
-
 
   useEffect(() => {
     try {
@@ -51,11 +68,11 @@ export default function Home() {
           if (h[0].analysis) setAnalysis(h[0].analysis);
         }
       }
-    } catch { }
+    } catch {}
   }, []);
 
   const saveHistory = useCallback((h: DataSummary[]) => {
-    try { localStorage.setItem("datasets_history", JSON.stringify(h)); } catch { }
+    try { localStorage.setItem("datasets_history", JSON.stringify(h)); } catch {}
   }, []);
 
   const runAnalysis = useCallback(
@@ -83,7 +100,9 @@ export default function Home() {
 
       try {
         const summary = history[idx];
-        const columnSummary = summary.columns.map(c => `${c.name}: ${c.type === "numeric" ? "number" : "string"}`).join("\n");
+        const columnSummary = summary.columns
+          .map((c) => `${c.name}: ${c.type === "numeric" ? "number" : "string"}`)
+          .join("\n");
 
         const res1 = await fetch("/api/analyze", {
           method: "POST",
@@ -99,20 +118,54 @@ export default function Home() {
         const { pythonCode } = await res1.json() as { pythonCode: string };
 
         const pythonUrl = process.env.NEXT_PUBLIC_PYTHON_URL || "http://localhost:8000";
+        const normalizedData = normalizeRowTypes(data, summary.columns);
         const res2 = await fetch(`${pythonUrl}/api/execute`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: pythonCode, dataset: JSON.stringify({ fileName, rows: data }) }),
+          body: JSON.stringify({
+            code: pythonCode,
+            dataset: JSON.stringify({ fileName, rows: normalizedData }),
+          }),
         });
 
         const pythonData = await res2.json() as { result?: string; error?: string };
         const pythonOutput = pythonData.result ?? pythonData.error ?? "";
 
-        let analysisResult: Analysis | null = null;
-        try { analysisResult = JSON.parse(pythonOutput) as Analysis; } catch {}
+        const isErrorOutput = /(^|[{"].*)ERROR|Traceback|Ошибка/m.test(pythonOutput);
 
-        if (analysisResult) {
+        let analysisResult: Analysis | null = null;
+        let parsedErrorJson: string | null = null;
+        try {
+          const parsed = JSON.parse(pythonOutput);
+          if (parsed && typeof parsed === "object" && "error" in parsed) {
+            parsedErrorJson = String(parsed.error);
+          } else {
+            analysisResult = parsed as Analysis;
+          }
+        } catch {}
+
+        if (parsedErrorJson) {
+          setAnalysis({
+            overview: parsedErrorJson,
+            keyMetrics: [],
+            insights: [],
+            charts: [],
+            isError: true,
+          });
+          setError(parsedErrorJson);
+        } else if (analysisResult) {
+          if (isErrorOutput) analysisResult.isError = true;
           setAnalysis(analysisResult);
+          if (isErrorOutput) setError(pythonOutput);
+        } else if (isErrorOutput) {
+          setAnalysis({
+            overview: pythonOutput,
+            keyMetrics: [],
+            insights: [],
+            charts: [],
+            isError: true,
+          });
+          setError(pythonOutput);
         } else {
           const res3 = await fetch("/api/analyze", {
             method: "POST",
@@ -137,7 +190,8 @@ export default function Home() {
           cacheRef.current.set(cacheKey, entry);
           try {
             const entries = Array.from(cacheRef.current.values())
-              .sort((x, y) => y.timestamp - x.timestamp).slice(0, 10);
+              .sort((x, y) => y.timestamp - x.timestamp)
+              .slice(0, 10);
             localStorage.setItem("analysis_cache", JSON.stringify(entries));
           } catch {}
         }
@@ -148,7 +202,7 @@ export default function Home() {
         if (currentId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [saveHistory, history]
+    [saveHistory, history],
   );
 
   const handleFileLoaded = useCallback(
@@ -164,44 +218,50 @@ export default function Home() {
         return nh;
       });
     },
-    [saveHistory]
+    [saveHistory],
   );
 
-  const handleSelect = useCallback((idx: number) => {
-    setActiveIdx(idx);
-    if (history[idx]) {
-      setAnalysis(history[idx].analysis ?? null);
-      setUserMessage(history[idx].analysisMessage ?? "");
-      setError(null);
-    }
-  }, [history]);
-
-  const handleDelete = useCallback((idx: number, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setHistory((prev) => {
-      const nh = prev.filter((_, i) => i !== idx);
-      saveHistory(nh);
-      if (nh.length === 0) {
-        setActiveIdx(null);
-        setAnalysis(null);
-        setUserMessage("");
+  const handleSelect = useCallback(
+    (idx: number) => {
+      setActiveIdx(idx);
+      if (history[idx]) {
+        setAnalysis(history[idx].analysis ?? null);
+        setUserMessage(history[idx].analysisMessage ?? "");
         setError(null);
-      } else if (activeIdx !== null) {
-        if (activeIdx >= nh.length) {
-          const newIdx = nh.length - 1;
-          setActiveIdx(newIdx);
-          setAnalysis(nh[newIdx].analysis ?? null);
-          setUserMessage(nh[newIdx].analysisMessage ?? "");
-        } else if (activeIdx === idx) {
-          const newIdx = Math.min(idx, nh.length - 1);
-          setActiveIdx(newIdx);
-          setAnalysis(nh[newIdx].analysis ?? null);
-          setUserMessage(nh[newIdx].analysisMessage ?? "");
-        }
       }
-      return nh;
-    });
-  }, [activeIdx, saveHistory]);
+    },
+    [history],
+  );
+
+  const handleDelete = useCallback(
+    (idx: number, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setHistory((prev) => {
+        const nh = prev.filter((_, i) => i !== idx);
+        saveHistory(nh);
+        if (nh.length === 0) {
+          setActiveIdx(null);
+          setAnalysis(null);
+          setUserMessage("");
+          setError(null);
+        } else if (activeIdx !== null) {
+          if (activeIdx >= nh.length) {
+            const newIdx = nh.length - 1;
+            setActiveIdx(newIdx);
+            setAnalysis(nh[newIdx].analysis ?? null);
+            setUserMessage(nh[newIdx].analysisMessage ?? "");
+          } else if (activeIdx === idx) {
+            const newIdx = Math.min(idx, nh.length - 1);
+            setActiveIdx(newIdx);
+            setAnalysis(nh[newIdx].analysis ?? null);
+            setUserMessage(nh[newIdx].analysisMessage ?? "");
+          }
+        }
+        return nh;
+      });
+    },
+    [activeIdx, saveHistory],
+  );
 
   const handleAnalyze = useCallback(
     (e: React.FormEvent) => {
@@ -210,7 +270,7 @@ export default function Home() {
       const s = history[activeIdx];
       runAnalysis(activeIdx, s.fullData, s.fileName, userMessage);
     },
-    [activeIdx, history, userMessage, runAnalysis]
+    [activeIdx, history, userMessage, runAnalysis],
   );
 
   const active = activeIdx !== null ? history[activeIdx] : null;
@@ -226,12 +286,15 @@ export default function Home() {
               aria-label="Меню"
             >
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={sidebarOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d={sidebarOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
               </svg>
             </button>
             <div className="min-w-0">
               <h1 className="text-lg font-semibold tracking-tight sm:text-xl truncate">Data Analyst AI</h1>
-              <p className="text-xs text-slate-500 sm:text-sm truncate">Загрузите файл(.csv, .xlsx) — AI проведёт анализ, посчитает метрики и покажет графики</p>
+              <p className="text-xs text-slate-500 sm:text-sm truncate">
+                Загрузите файл(.csv, .xlsx) — AI проведёт анализ, посчитает метрики и покажет графики
+              </p>
             </div>
           </div>
         </div>
@@ -242,11 +305,7 @@ export default function Home() {
           <div className="md:hidden fixed inset-0 z-10 bg-black/30" onClick={() => setSidebarOpen(false)} />
         )}
 
-        <aside className={`
-          fixed inset-y-0 left-0 z-30 w-64 bg-slate-50 flex flex-col border-r border-slate-200 transform transition-transform
-          md:relative md:z-0 md:translate-x-0
-          ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
-        `}>
+        <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-slate-50 flex flex-col border-r border-slate-200 transform transition-transform md:relative md:z-0 md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
             <h2 className="text-base font-bold text-slate-700">Чаты</h2>
             <button className="md:hidden rounded p-1 hover:bg-slate-200" onClick={() => setSidebarOpen(false)}>
@@ -256,7 +315,9 @@ export default function Home() {
             </button>
           </div>
           <nav className="flex-1 overflow-y-auto">
-            {history.length === 0 && <div className="px-4 py-6 text-slate-400 text-sm">Нет загруженных датасетов</div>}
+            {history.length === 0 && (
+              <div className="px-4 py-6 text-slate-400 text-sm">Нет загруженных датасетов</div>
+            )}
             <ul>
               {history.map((item, idx) => (
                 <li key={idx} className="group relative">
@@ -272,7 +333,7 @@ export default function Home() {
                     </div>
                   </button>
                   <button
-                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 text-slate-400 hover:text-red-600 transition-all"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 rounded hover:bg-red-100 text-slate-400 hover:text-red-600 transition-all"
                     onClick={(e) => handleDelete(idx, e)}
                     title="Удалить чат"
                   >
@@ -296,12 +357,18 @@ export default function Home() {
               </label>
               <textarea
                 className="w-full rounded border border-slate-300 p-2 text-sm min-h-[60px]"
-                placeholder={analysis ? "Например: покажи топ-5 по выручке, построй гистограмму по месяцам..." : "Напишите, на что обратить внимание при анализе..."}
+                placeholder={analysis
+                  ? "Например: покажи топ-5 по выручке, построй гистограмму по месяцам..."
+                  : "Напишите, на что обратить внимание при анализе..."}
                 value={userMessage}
-                onChange={e => setUserMessage(e.target.value)}
+                onChange={(e) => setUserMessage(e.target.value)}
                 disabled={isLoading}
               />
-              <button type="submit" className="self-end rounded bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" disabled={isLoading}>
+              <button
+                type="submit"
+                className="self-end rounded bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={isLoading}
+              >
                 {analysis ? "Задать вопрос" : "Отправить на анализ"}
               </button>
             </form>
@@ -320,7 +387,6 @@ export default function Home() {
             <div className="mx-auto mt-6 max-w-2xl rounded-lg border border-rose-200 bg-rose-50 p-4 text-slate-800">
               <p className="font-semibold">Ошибка анализа</p>
               <p className="mt-2 text-sm text-slate-600">{error}</p>
-              <p className="mt-3 text-xs text-slate-500">Проверьте DEEPSEEK_API_KEY в <code>.env</code></p>
             </div>
           )}
 
@@ -333,9 +399,18 @@ export default function Home() {
                     <h3 className="text-base font-semibold text-slate-900 sm:text-lg truncate">{active.fileName}</h3>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-center sm:gap-4">
-                    <div><p className="text-xl font-semibold sm:text-2xl">{active.rows.toLocaleString()}</p><p className="text-xs text-slate-500">строк</p></div>
-                    <div><p className="text-xl font-semibold sm:text-2xl">{active.columns.length}</p><p className="text-xs text-slate-500">колонок</p></div>
-                    <div><p className="text-xl font-semibold sm:text-2xl">{active.columns.filter(c => c.type === "numeric").length}</p><p className="text-xs text-slate-500">числовых</p></div>
+                    <div>
+                      <p className="text-xl font-semibold sm:text-2xl">{active.rows.toLocaleString()}</p>
+                      <p className="text-xs text-slate-500">строк</p>
+                    </div>
+                    <div>
+                      <p className="text-xl font-semibold sm:text-2xl">{active.columns.length}</p>
+                      <p className="text-xs text-slate-500">колонок</p>
+                    </div>
+                    <div>
+                      <p className="text-xl font-semibold sm:text-2xl">{active.columns.filter((c) => c.type === "numeric").length}</p>
+                      <p className="text-xs text-slate-500">числовых</p>
+                    </div>
                   </div>
                 </div>
                 <div className="mt-6">
@@ -344,7 +419,7 @@ export default function Home() {
                     <table className="min-w-full text-xs">
                       <thead>
                         <tr>
-                          {active.columns.map(col => (
+                          {active.columns.map((col) => (
                             <th key={col.name} className="px-2 py-1 font-semibold text-slate-700 border-b border-slate-100 bg-slate-50">
                               {col.name} <span className="text-slate-400">({col.type})</span>
                             </th>
@@ -354,7 +429,7 @@ export default function Home() {
                       <tbody>
                         {active.previewRows.map((row, i) => (
                           <tr key={i}>
-                            {active.columns.map(col => (
+                            {active.columns.map((col) => (
                               <td key={col.name} className="px-2 py-1 border-b border-slate-50 text-slate-800">
                                 {String(row[col.name] ?? "")}
                               </td>
