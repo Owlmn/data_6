@@ -12,7 +12,7 @@ from openai import OpenAI
 DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_MODEL = "mimo-v2.5-pro"
 DEFAULT_INPUT_CSV = "Articles.csv"
-DEFAULT_OUTPUT_TXT = "news.txt"
+DEFAULT_OUTPUT_JSON = "news.json"
 DEFAULT_MAX_ITEMS = 3
 DEFAULT_SUMMARY_LANGUAGE = "English"
 CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
@@ -26,7 +26,7 @@ def load_config():
         "base_url": os.getenv("MIMO_BASE_URL", DEFAULT_BASE_URL),
         "model": os.getenv("MIMO_MODEL", DEFAULT_MODEL),
         "input_csv": os.getenv("INPUT_CSV", DEFAULT_INPUT_CSV),
-        "output_txt": os.getenv("OUTPUT_TXT", DEFAULT_OUTPUT_TXT),
+        "output_json": os.getenv("OUTPUT_JSON", DEFAULT_OUTPUT_JSON),
         "max_items": int(os.getenv("MAX_ITEMS", str(DEFAULT_MAX_ITEMS))),
         "request_timeout": float(os.getenv("REQUEST_TIMEOUT", "120")),
         "summary_language": os.getenv("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE),
@@ -179,24 +179,24 @@ def summarize_news_item(client, config, item):
     }
 
 
-def write_txt_results(path, results):
-    print(f"[DEBUG] Writing results to TXT: {path}")
+def write_json_results(path, results):
+    print(f"[DEBUG] Writing results to JSON: {path}")
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with output_path.open("w", encoding="utf-8") as file:
-        for index, item in enumerate(results, start=1):
-            file.write(f"{'='*80}\n\n")
-            
-            if item["title"]:
-                file.write(f"Title: {item['title']}\n")
-            
-            if item["published_at"]:
-                file.write(f"Published: {item['published_at']}\n")
-            
-            file.write(f"\nSummary:\n{item['summary']}\n")
+    output_data = []
+    for index, item in enumerate(results, start=1):
+        output_data.append({
+            "id": index,
+            "title": item["title"] if item["title"] else "",
+            "published": item["published_at"] if item["published_at"] else "",
+            "summary": item["summary"]
+        })
     
-    print(f"[DEBUG] TXT file saved successfully")
+    with output_path.open("w", encoding="utf-8") as file:
+        json.dump(output_data, file, ensure_ascii=False, indent=2)
+    
+    print(f"[DEBUG] JSON file saved successfully")
 
 
 def main():
@@ -211,8 +211,8 @@ def main():
             results.append(summarized)
             print(f"Processed {index}/{len(items)}")
 
-        write_txt_results(config["output_txt"], results)
-        print(f"[DEBUG] TXT saved to: {config['output_txt']}")
+        write_json_results(config["output_json"], results)
+        print(f"[DEBUG] JSON saved to: {config['output_json']}")
         
         print(f"[DEBUG] Successfully processed {len(results)} articles")
         return 0
