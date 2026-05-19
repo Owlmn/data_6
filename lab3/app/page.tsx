@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import FileUpload from "@/components/FileUpload";
 import AnalysisResults from "@/components/AnalysisResults";
 import { summarizeData, toPersisted, type DataSummary, type PersistedSummary, type Analysis } from "@/lib/dataParser";
+import { sanitizeUserInput } from "@/lib/sanitize";
 
 interface CacheEntry {
   fileHash: string;
@@ -246,7 +247,11 @@ export default function Home() {
     (e: React.FormEvent) => {
       e.preventDefault();
       if (activeIdx === null || !history[activeIdx]) return;
-      runAnalysis(activeIdx, userMessage);
+      const sanitized = sanitizeUserInput(userMessage);
+      if (sanitized.flagged) {
+        console.warn("[Sanitize] Prompt injection detected in user message");
+      }
+      runAnalysis(activeIdx, sanitized.sanitized);
     },
     [activeIdx, history, userMessage, runAnalysis],
   );
