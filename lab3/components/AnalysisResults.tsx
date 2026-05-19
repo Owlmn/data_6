@@ -120,7 +120,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
     <div className="space-y-6">
       <section className={`rounded-lg border p-3 sm:p-5 ${isError ? "border-red-300 bg-red-50" : "border-slate-200 bg-white"}`}>
         <h2 className={`mb-2 text-lg font-semibold ${isError ? "text-red-800" : "text-slate-900"}`}>
-          {isError ? "❌ Ошибка выполнения" : "📋 Обзор"}
+          {isError ? "Ошибка выполнения" : "Обзор"}
         </h2>
         <pre className={`text-sm leading-relaxed whitespace-pre-wrap ${isError ? "text-red-700" : "text-slate-700"}`}>
           {analysis.overview}
@@ -129,7 +129,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
 
       {analysis.keyMetrics && analysis.keyMetrics.length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-semibold text-slate-900">📊 Ключевые метрики</h2>
+          <h2 className="mb-3 text-lg font-semibold text-slate-900">Ключевые метрики</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {analysis.keyMetrics.map((m, i) => (
               <div key={i} className="rounded-lg border border-slate-200 bg-white p-3 sm:p-4">
@@ -144,7 +144,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
 
       {analysis.insights && analysis.insights.length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-semibold text-slate-900">💡 Инсайты</h2>
+          <h2 className="mb-3 text-lg font-semibold text-slate-900">Инсайты</h2>
           <div className="space-y-3">
             {analysis.insights.map((ins, i) => (
               <div key={i} className={`rounded-lg border p-4 ${importanceColors[ins.importance]}`}>
@@ -163,7 +163,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
 
       {analysis.correlations && analysis.correlations.length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-semibold text-slate-900">🔗 Корреляции</h2>
+          <h2 className="mb-3 text-lg font-semibold text-slate-900">Корреляции</h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -193,7 +193,7 @@ export default function AnalysisResults({ analysis }: { analysis: Analysis }) {
 
       {analysis.charts && analysis.charts.length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-semibold text-slate-900">📈 Графики</h2>
+          <h2 className="mb-3 text-lg font-semibold text-slate-900">Графики</h2>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {analysis.charts.map((chart, i) => (
               <ChartRenderer key={i} chart={chart} />

@@ -22,24 +22,6 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
-function normalizeRowTypes(rows: Record<string, unknown>[], columns: { name: string; type: string }[]): Record<string, unknown>[] {
-  const numericCols = new Set(columns.filter((c) => c.type === "numeric").map((c) => c.name));
-  return rows.map((row) => {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(row)) {
-      if (numericCols.has(key)) {
-        const num = Number(val);
-        out[key] = isNaN(num) ? null : num;
-      } else if (typeof val === "string" && val.trim() !== "" && !isNaN(Number(val.trim()))) {
-        out[key] = Number(val.trim());
-      } else {
-        out[key] = val;
-      }
-    }
-    return out;
-  });
-}
-
 export default function Home() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -48,8 +30,12 @@ export default function Home() {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
   const [userMessage, setUserMessage] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<string>("");
+
   const requestIdRef = useRef(0);
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
+
+  const pythonUrl = process.env.NEXT_PUBLIC_PYTHON_URL || "http://localhost:8000";
 
   useEffect(() => {
     try {
@@ -80,6 +66,7 @@ export default function Home() {
       const currentId = ++requestIdRef.current;
       setAnalysis(null);
       setError(null);
+      setAgentStatus("Отправляю запрос агенту...");
       setIsLoading(true);
 
       const fileHash = simpleHash(JSON.stringify(data));
@@ -95,6 +82,7 @@ export default function Home() {
           return u;
         });
         setIsLoading(false);
+        setAgentStatus("");
         return;
       }
 
@@ -104,105 +92,82 @@ export default function Home() {
           .map((c) => `${c.name}: ${c.type === "numeric" ? "number" : "string"}`)
           .join("\n");
 
-        const res1 = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ columnSummary, message, fileName }),
-        });
+        setAgentStatus("LLM-агент генерирует и выполняет код...");
 
-        if (!res1.ok) {
-          const err = await res1.json().catch(() => ({}));
-          throw new Error((err as Record<string, unknown>).error as string || "Failed to generate code");
-        }
-
-        const { pythonCode } = await res1.json() as { pythonCode: string };
-
-        const pythonUrl = process.env.NEXT_PUBLIC_PYTHON_URL || "http://localhost:8000";
-        const normalizedData = normalizeRowTypes(data, summary.columns);
-        const res2 = await fetch(`${pythonUrl}/api/execute`, {
+        const res = await fetch(`${pythonUrl}/api/analyze`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            code: pythonCode,
-            dataset: JSON.stringify({ fileName, rows: normalizedData }),
+            column_summary: columnSummary,
+            message,
+            dataset: JSON.stringify({ fileName, rows: data }),
           }),
         });
 
-        const pythonData = await res2.json() as { result?: string; error?: string };
-        const pythonOutput = pythonData.result ?? pythonData.error ?? "";
-
-        const isErrorOutput = /(^|[{"].*)ERROR|Traceback|Ошибка/m.test(pythonOutput);
-
-        let analysisResult: Analysis | null = null;
-        let parsedErrorJson: string | null = null;
-        try {
-          const parsed = JSON.parse(pythonOutput);
-          if (parsed && typeof parsed === "object" && "error" in parsed) {
-            parsedErrorJson = String(parsed.error);
-          } else {
-            analysisResult = parsed as Analysis;
-          }
-        } catch {}
-
-        if (parsedErrorJson) {
-          setAnalysis({
-            overview: parsedErrorJson,
-            keyMetrics: [],
-            insights: [],
-            charts: [],
-            isError: true,
-          });
-          setError(parsedErrorJson);
-        } else if (analysisResult) {
-          if (isErrorOutput) analysisResult.isError = true;
-          setAnalysis(analysisResult);
-          if (isErrorOutput) setError(pythonOutput);
-        } else if (isErrorOutput) {
-          setAnalysis({
-            overview: pythonOutput,
-            keyMetrics: [],
-            insights: [],
-            charts: [],
-            isError: true,
-          });
-          setError(pythonOutput);
-        } else {
-          const res3 = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pythonOutput }),
-          });
-          const { analysis } = await res3.json() as { analysis: Analysis };
-          setAnalysis(analysis);
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(
+            (errBody as Record<string, string>).detail ||
+            (errBody as Record<string, string>).error ||
+            `Agent error ${res.status}`
+          );
         }
+
+        const result = await res.json() as Analysis & { iterations?: number };
+
+        if (result.iterations) {
+          setAgentStatus(`Анализ завершён за ${result.iterations} итераций`);
+        } else {
+          setAgentStatus("");
+        }
+
+        const analysisResult: Analysis = {
+          overview: result.overview || "Пустой результат",
+          keyMetrics: result.keyMetrics || [],
+          insights: result.insights || [],
+          correlations: result.correlations || [],
+          charts: result.charts || [],
+          isError: result.isError || false,
+        };
 
         if (currentId !== requestIdRef.current) return;
 
+        setAnalysis(analysisResult);
+
         setHistory((prev) => {
           const u = [...prev];
-          if (u[idx]) u[idx] = { ...u[idx], analysis: analysisResult || ({} as Analysis), analysisMessage: message };
+          if (u[idx]) u[idx] = { ...u[idx], analysis: analysisResult, analysisMessage: message };
           saveHistory(u);
           return u;
         });
 
-        if (analysisResult) {
-          const entry: CacheEntry = { fileHash, message, analysis: analysisResult, timestamp: Date.now() };
-          cacheRef.current.set(cacheKey, entry);
-          try {
-            const entries = Array.from(cacheRef.current.values())
-              .sort((x, y) => y.timestamp - x.timestamp)
-              .slice(0, 10);
-            localStorage.setItem("analysis_cache", JSON.stringify(entries));
-          } catch {}
-        }
+        const entry: CacheEntry = { fileHash, message, analysis: analysisResult, timestamp: Date.now() };
+        cacheRef.current.set(cacheKey, entry);
+        try {
+          const entries = Array.from(cacheRef.current.values())
+            .sort((x, y) => y.timestamp - x.timestamp)
+            .slice(0, 20);
+          localStorage.setItem("analysis_cache", JSON.stringify(entries));
+        } catch {}
+
       } catch (e) {
         if (currentId !== requestIdRef.current) return;
-        setError(e instanceof Error ? e.message : "Unknown error");
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        setError(msg);
+        setAnalysis({
+          overview: msg,
+          keyMetrics: [],
+          insights: [],
+          charts: [],
+          isError: true,
+        });
       } finally {
-        if (currentId === requestIdRef.current) setIsLoading(false);
+        if (currentId === requestIdRef.current) {
+          setIsLoading(false);
+        }
       }
     },
-    [saveHistory, history],
+    [saveHistory, history, pythonUrl],
   );
 
   const handleFileLoaded = useCallback(
@@ -214,6 +179,7 @@ export default function Home() {
         setUserMessage("");
         setAnalysis(null);
         setError(null);
+        setAgentStatus("");
         saveHistory(nh);
         return nh;
       });
@@ -228,6 +194,7 @@ export default function Home() {
         setAnalysis(history[idx].analysis ?? null);
         setUserMessage(history[idx].analysisMessage ?? "");
         setError(null);
+        setAgentStatus("");
       }
     },
     [history],
@@ -244,6 +211,7 @@ export default function Home() {
           setAnalysis(null);
           setUserMessage("");
           setError(null);
+          setAgentStatus("");
         } else if (activeIdx !== null) {
           if (activeIdx >= nh.length) {
             const newIdx = nh.length - 1;
@@ -293,7 +261,7 @@ export default function Home() {
             <div className="min-w-0">
               <h1 className="text-lg font-semibold tracking-tight sm:text-xl truncate">Data Analyst AI</h1>
               <p className="text-xs text-slate-500 sm:text-sm truncate">
-                Загрузите файл(.csv, .xlsx) — AI проведёт анализ, посчитает метрики и покажет графики
+                Загрузите файл (.csv, .xlsx) — AI проведёт анализ, посчитает метрики и покажет графики
               </p>
             </div>
           </div>
@@ -329,7 +297,7 @@ export default function Home() {
                     <div className="text-xs text-slate-500 flex gap-2 mt-1">
                       <span>Строк: {item.rows}</span>
                       <span>Колонок: {item.columns.length}</span>
-                      {item.analysis && <span className="text-green-600">✓ Анализ</span>}
+                      {item.analysis && <span className="text-green-600">Анализ</span>}
                     </div>
                   </button>
                   <button
@@ -376,9 +344,16 @@ export default function Home() {
 
           {isLoading && (
             <div className="mt-6 text-center">
-              <div className="inline-flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-2.5">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-500 border-t-transparent" />
-                <span className="text-sm font-medium text-slate-700">Deepseek анализирует данные...</span>
+              <div className="inline-flex flex-col items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-500 border-t-transparent" />
+                  <span className="text-sm font-medium text-slate-700">
+                    {agentStatus || "Deepseek анализирует данные..."}
+                  </span>
+                </div>
+                <span className="text-xs text-slate-400">
+                  Агент автоматически исправляет ошибки и повторяет запросы
+                </span>
               </div>
             </div>
           )}
