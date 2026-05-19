@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import FileUpload from "@/components/FileUpload";
 import AnalysisResults from "@/components/AnalysisResults";
-import { summarizeData, type DataSummary, type Analysis } from "@/lib/dataParser";
+import { summarizeData, toPersisted, type DataSummary, type PersistedSummary, type Analysis } from "@/lib/dataParser";
 
 interface CacheEntry {
   fileHash: string;
@@ -12,14 +12,9 @@ interface CacheEntry {
   timestamp: number;
 }
 
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return hash.toString(36);
+function makeFileHash(s: DataSummary | PersistedSummary): string {
+  const cols = s.columns.map((c) => `${c.name}:${c.type}`).join(",");
+  return `${s.fileName}_${s.rows}_${cols}`;
 }
 
 export default function Home() {
@@ -34,6 +29,7 @@ export default function Home() {
 
   const requestIdRef = useRef(0);
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
+  const dataMapRef = useRef<Map<string, Record<string, unknown>[]>>(new Map());
 
   const pythonUrl = process.env.NEXT_PUBLIC_PYTHON_URL || "http://localhost:8000";
 
@@ -41,36 +37,49 @@ export default function Home() {
     try {
       const cached = localStorage.getItem("analysis_cache");
       if (cached) {
-        JSON.parse(cached).forEach((e: CacheEntry) =>
-          cacheRef.current.set(e.fileHash + "_" + simpleHash(e.message), e)
-        );
+        JSON.parse(cached).forEach((e: CacheEntry) => {
+          cacheRef.current.set(e.fileHash + "_" + e.message, e);
+        });
       }
       const saved = localStorage.getItem("datasets_history");
       if (saved) {
-        const h = JSON.parse(saved) as DataSummary[];
-        setHistory(h);
-        if (h.length > 0) {
+        const h = JSON.parse(saved) as PersistedSummary[];
+        const restored: DataSummary[] = h.map((p) => ({ ...p, fullData: undefined }));
+        setHistory(restored);
+        if (restored.length > 0) {
           setActiveIdx(0);
-          if (h[0].analysis) setAnalysis(h[0].analysis);
+          if (restored[0].analysis) setAnalysis(restored[0].analysis);
         }
       }
     } catch {}
   }, []);
 
-  const saveHistory = useCallback((h: DataSummary[]) => {
-    try { localStorage.setItem("datasets_history", JSON.stringify(h)); } catch {}
+  const persistHistory = useCallback((items: DataSummary[]) => {
+    try {
+      const stripped = items.map(toPersisted);
+      localStorage.setItem("datasets_history", JSON.stringify(stripped));
+    } catch {}
   }, []);
 
   const runAnalysis = useCallback(
-    async (idx: number, data: Record<string, unknown>[], fileName: string, message: string) => {
+    async (idx: number, message: string) => {
+      const summary = history[idx];
+      if (!summary) return;
+
+      const fileHash = makeFileHash(summary);
+      const data = dataMapRef.current.get(fileHash);
+      if (!data) {
+        setError("Данные не найдены в памяти. Перезагрузите файл.");
+        return;
+      }
+
       const currentId = ++requestIdRef.current;
       setAnalysis(null);
       setError(null);
       setAgentStatus("Отправляю запрос агенту...");
       setIsLoading(true);
 
-      const fileHash = simpleHash(JSON.stringify(data));
-      const cacheKey = fileHash + "_" + simpleHash(message);
+      const cacheKey = fileHash + "_" + message;
 
       const cached = cacheRef.current.get(cacheKey);
       if (cached) {
@@ -78,7 +87,7 @@ export default function Home() {
         setHistory((prev) => {
           const u = [...prev];
           if (u[idx]) u[idx] = { ...u[idx], analysis: cached.analysis, analysisMessage: message };
-          saveHistory(u);
+          persistHistory(u);
           return u;
         });
         setIsLoading(false);
@@ -87,7 +96,6 @@ export default function Home() {
       }
 
       try {
-        const summary = history[idx];
         const columnSummary = summary.columns
           .map((c) => `${c.name}: ${c.type === "numeric" ? "number" : "string"}`)
           .join("\n");
@@ -100,7 +108,7 @@ export default function Home() {
           body: JSON.stringify({
             column_summary: columnSummary,
             message,
-            dataset: JSON.stringify({ fileName, rows: data }),
+            dataset: JSON.stringify({ fileName: summary.fileName, rows: data }),
           }),
         });
 
@@ -137,7 +145,7 @@ export default function Home() {
         setHistory((prev) => {
           const u = [...prev];
           if (u[idx]) u[idx] = { ...u[idx], analysis: analysisResult, analysisMessage: message };
-          saveHistory(u);
+          persistHistory(u);
           return u;
         });
 
@@ -167,12 +175,13 @@ export default function Home() {
         }
       }
     },
-    [saveHistory, history, pythonUrl],
+    [persistHistory, history, pythonUrl],
   );
 
   const handleFileLoaded = useCallback(
     (data: Record<string, unknown>[], name: string) => {
       const summary = summarizeData(data, name);
+      dataMapRef.current.set(makeFileHash(summary), data);
       setHistory((prev) => {
         const nh = [...prev, summary];
         setActiveIdx(nh.length - 1);
@@ -180,11 +189,11 @@ export default function Home() {
         setAnalysis(null);
         setError(null);
         setAgentStatus("");
-        saveHistory(nh);
+        persistHistory(nh);
         return nh;
       });
     },
-    [saveHistory],
+    [persistHistory],
   );
 
   const handleSelect = useCallback(
@@ -205,7 +214,9 @@ export default function Home() {
       e.stopPropagation();
       setHistory((prev) => {
         const nh = prev.filter((_, i) => i !== idx);
-        saveHistory(nh);
+        const removed = prev[idx];
+        if (removed) dataMapRef.current.delete(makeFileHash(removed));
+        persistHistory(nh);
         if (nh.length === 0) {
           setActiveIdx(null);
           setAnalysis(null);
@@ -228,15 +239,14 @@ export default function Home() {
         return nh;
       });
     },
-    [activeIdx, saveHistory],
+    [activeIdx, persistHistory],
   );
 
   const handleAnalyze = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
       if (activeIdx === null || !history[activeIdx]) return;
-      const s = history[activeIdx];
-      runAnalysis(activeIdx, s.fullData, s.fileName, userMessage);
+      runAnalysis(activeIdx, userMessage);
     },
     [activeIdx, history, userMessage, runAnalysis],
   );

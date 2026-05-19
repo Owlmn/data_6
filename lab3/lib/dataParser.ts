@@ -26,10 +26,32 @@ export interface DataSummary {
   rows: number;
   columns: ColumnInfo[];
   previewRows: Record<string, unknown>[];
-  fullData: Record<string, unknown>[];
+  fullData?: Record<string, unknown>[];
   analysis: Analysis | null;
   analysisMessage: string;
   timestamp: number;
+}
+
+export interface PersistedSummary {
+  fileName: string;
+  rows: number;
+  columns: ColumnInfo[];
+  previewRows: Record<string, unknown>[];
+  analysis: Analysis | null;
+  analysisMessage: string;
+  timestamp: number;
+}
+
+export function toPersisted(s: DataSummary): PersistedSummary {
+  return {
+    fileName: s.fileName,
+    rows: s.rows,
+    columns: s.columns,
+    previewRows: s.previewRows,
+    analysis: s.analysis,
+    analysisMessage: s.analysisMessage,
+    timestamp: s.timestamp,
+  };
 }
 
 export function summarizeData(
